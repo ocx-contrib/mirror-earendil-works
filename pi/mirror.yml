@@ -1,0 +1,144 @@
+# pi — the coding-agent CLI from Earendil Works (https://pi.dev).
+#
+# No mirror-base.yml / extends: — one package, every key is package-owned.
+
+name: pi
+
+# Logical index package `earendil-works/pi` at the physical path
+# `ghcr.io/ocx-contrib/earendil-works/pi`. The org is the project's own brand
+# and holds several tools (pi, psh, gondolin, …), so it names the namespace.
+target:
+  registry: ghcr.io
+  repository: ocx-contrib/earendil-works/pi
+
+source:
+  type: github_release
+  owner: earendil-works
+  repo: pi
+  tag_pattern: "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+
+skip_prereleases: true
+cascade: true
+# Bare semver tags, no upstream +build segment for `date` to collide with.
+build_timestamp: date
+
+verify:
+  github_asset_digest: true
+
+concurrency:
+  # bun-compiled single-file binary (~120 MB, JS runtime embedded) — keep
+  # bundle/push concurrency low.
+  max_downloads: 8
+  max_bundles: 4
+  max_pushes: 2
+  rate_limit_ms: 100
+  max_retries: 3
+  compression_threads: 0
+
+# ─── libc gate (Phase 3.5) — evidence, measured 2026-11-17 on v1.5.2 ────────
+#
+#   $ file pi/pi      (pi-linux-x64.tar.gz)
+#   ELF 64-bit LSB executable, x86-64, dynamically linked,
+#   interpreter /lib64/ld-linux-x86-64.so.2
+#   $ ldd pi/pi       → libc.so.6 libpthread.so.0 libdl.so.2 libm.so.6
+#   $ readelf -V pi/pi | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+#   GLIBC_2.17
+#   $ file pi/pi      (pi-linux-arm64.tar.gz)
+#   ELF 64-bit LSB executable, ARM aarch64, dynamically linked,
+#   interpreter /lib/ld-linux-aarch64.so.1          — floor GLIBC_2.17
+#
+# Dynamically linked against glibc on both arches, and upstream ships no musl
+# build → `+libc.glibc` only; container legs ubuntu + fedora, no alpine.
+# (native/linux/prebuilds/*/linux-platform-x11.node is a dlopen'd addon that
+# needs libxcb — clipboard only, never loaded by the CLI's startup or export.)
+#
+# Resolution verified both ways on v1.5.2: each pattern matches exactly one of
+# the ten assets; upstream ships exactly these seven os/arch builds (plus
+# source tarball, install-package JSON and SHA256SUMS, none matched).
+assets:
+  "linux/amd64+libc.glibc":
+    - "^pi-linux-x64\\.tar\\.gz$"
+  "linux/arm64+libc.glibc":
+    - "^pi-linux-arm64\\.tar\\.gz$"
+  darwin/amd64:
+    - "^pi-darwin-x64\\.tar\\.gz$"
+  darwin/arm64:
+    - "^pi-darwin-arm64\\.tar\\.gz$"
+  windows/amd64:
+    - "^pi-windows-x64\\.zip$"
+  windows/arm64:
+    - "^pi-windows-arm64\\.zip$"
+
+# Tarballs wrap everything in `pi/` (binary at pi/pi beside the package.json,
+# theme/, export-html/, native/ it reads at runtime); the zips are flat with
+# pi.exe at the root. Strip the wrapper so both land the same tree.
+asset_type:
+  default:
+    type: archive
+    strip_components: 1
+  platforms:
+    windows/amd64:
+      type: archive
+      strip_components: 0
+    windows/arm64:
+      type: archive
+      strip_components: 0
+
+bin_scan: verify
+
+metadata:
+  default: metadata.json
+
+catalog:
+  logo: logo.svg
+
+versions:
+  # "starting with latest version" — owner request, 2026-11-17.
+  min: "1.5.2"
+  new_per_run: 5
+  poll_interval: "36 2-23/6 * * *"   # poll_stagger.py earendil-works/pi
+
+tests:
+  # Resolves from the REPOSITORY ROOT, unlike metadata/catalog above.
+  - name: smoke
+    script: pi/tests/smoke.star
+
+annotations:
+  #   $ gh api repos/earendil-works/pi/license --jq .license.spdx_id
+  #   MIT
+  org.opencontainers.image.licenses: "MIT"
+
+platforms:
+  "linux/amd64+libc.glibc":
+    runner: ubuntu-latest
+    containers:
+      - { image: "ubuntu:24.04", shell: bash }
+      - { image: "fedora:40",    shell: bash }
+  "linux/arm64+libc.glibc":
+    runner: ubuntu-24.04-arm   # native arm64, no qemu
+    containers:
+      - { image: "ubuntu:24.04", shell: bash }
+      - { image: "fedora:40",    shell: bash }
+  darwin/amd64:
+    # bun-compiled binaries SIGILL under Rosetta 2, so an Apple Silicon runner
+    # cannot test the Intel slice; macos-15-intel is native x86_64 (fleet
+    # precedent: mirror-tailwindlabs).
+    runner: macos-15-intel
+  darwin/arm64:
+    runner: macos-15
+    shell: bash
+  windows/amd64:
+    runner: windows-latest
+    shell: pwsh
+  windows/arm64:
+    runner: windows-11-arm     # amd64 pool cannot run an ARM64 PE
+    shell: pwsh
+
+notify:
+  discord:
+    webhook_secret: OCX_MIRROR_DISCORD_HOOK
+    user_id: "227748867204972545"
+
+announce:
+  package: earendil-works/pi
+  fork: ocx-contrib/index
